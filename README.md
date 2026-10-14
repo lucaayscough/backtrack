@@ -1,124 +1,79 @@
-# JUCE Backtrack Utility
+# Backtrack
 
-## Summary
+A single-header JUCE debugging tool (`include/backtrack.hpp`) that records audio
+streams in memory and shows them in a floating waveform viewer you can scroll,
+zoom and inspect down to individual samples.
 
-This repository provides a C++20, single-header JUCE debugging utility in
-`include/backtrack.hpp`. Each
-`la::Backtrack` instance captures one named, append-only, multichannel audio
-stream and registers itself with a shared floating waveform viewer.
+Requires C++20 and JUCE 7.0.12+ or 8.
 
-The viewer opens automatically once both an editor and at least one Backtrack
-instance exist. It supports live scrollback, buffer selection, stacked channel
-lanes, navigation to the recording start, horizontal zoom, and exact sample
-inspection.
+## Usage
 
-## Public API
+```cmake
+include(FetchContent)
 
-```cpp
-namespace la {
+# After JUCE is available, so Backtrack reuses it.
+FetchContent_Declare(
+  backtrack
+  GIT_REPOSITORY https://github.com/lucaayscough/backtrack.git
+  GIT_TAG master
+  GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(backtrack)
 
-using f32 = float;
-
-class Backtrack final
-{
-public:
-  static void setEditor(juce::Component* editor);
-  static void show();
-  static void hide();
-  static void toggle();
-
-  Backtrack(std::string name, double sampleRate, int channelCount);
-
-  Backtrack(const Backtrack&) = delete;
-  Backtrack& operator=(const Backtrack&) = delete;
-  Backtrack(Backtrack&&) = delete;
-  Backtrack& operator=(Backtrack&&) = delete;
-
-  ~Backtrack();
-
-  void record(const juce::AudioBuffer<f32>& buffer,
-              int startSample = 0,
-              int numSamples = -1) noexcept;
-
-  void record(std::span<const f32> mono) noexcept;
-  void record(std::span<const std::span<const f32>> channels) noexcept;
-};
-
-} // namespace la
+target_link_libraries(MyPlugin PRIVATE la::backtrack)
 ```
 
-- `setEditor()` is called on the JUCE message thread and stores a
-  `juce::Component::SafePointer`, not an unsafe raw lifetime dependency.
-- Construction requires a non-empty name, positive finite sample rate, and a
-  positive channel count.
-- Each channel owns a `std::vector<f32>` and reserves one hour of samples.
-  Recording past the reserve grows storage geometrically, so appends stay
-  amortized constant time.
-- Recording remains append-only until destruction. There is no `start()`,
-  `stop()`, or `clear()`; inspection begins naturally when the host stops
-  supplying blocks.
-- Invalid ranges, mismatched channel counts, unequal span lengths, or allocation
-  failures drop the whole block, increment an error counter, and never throw
-  through the audio callback.
-- Callers must ensure destruction does not race with `record()`.
+```cpp
+#include "backtrack.hpp"
 
-## Implementation and Viewer Behavior
+// Processor
+std::optional<la::Backtrack> backtrack;
 
-- Keep the shared registry, editor pointer, window, and naming counters in an
-  inline function-local singleton so the header is ODR-safe.
-- Register and unregister instances automatically. Duplicate labels are stable
-  and assigned in creation order: `Input`, `Input (2)`, `Input (3)`.
-- Protect each instance with a small mutex. Recording appends under that lock;
-  the UI copies only summaries or the currently visible exact-sample range,
-  keeping lock duration bounded.
-- Maintain an amortized-linear hierarchy of minimum/maximum waveform buckets,
-  beginning at 64 samples per bucket, alongside full samples.
-  When more than one sample maps to a pixel, painting draws one min/max column
-  per pixel: from the bucket hierarchy at 64+ samples per pixel, and reduced
-  from raw samples below that. Below two samples per pixel it draws the exact
-  waveform, adding sample points at four or more pixels per sample.
-  Columns always span at least one pixel, so flat signals remain visible.
-- Display channels as vertically stacked lanes with a shared time axis and zero
-  lines.
-- Auto-follow the newest audio while recording. Manual dragging, scrollbar use,
-  or zooming disengages follow mode; a `Live` control restores it.
-- Provide mouse-wheel zoom centered on the cursor, drag/scroll navigation,
-  `Fit All`, `Live`, and `Go to Start` controls.
-- At sample-level zoom, draw individual points and show channel, sample index,
-  time, and value on hover.
-- The top menu selects the active Backtrack buffer. The status area shows
-  duration, sample rate, channels, dropped blocks, retained bytes, reserved
-  bytes, and aggregate Backtrack retained bytes as a percentage of physical
-  RAM.
-- Label memory reporting as `Backtrack memory estimate`: normal below 10% of
-  physical RAM, amber from 10%, and red from 25%. If RAM size is unavailable,
-  show byte counts without a percentage.
-- Use one non-modal resizable `juce::DocumentWindow`, initially centered relative
-  to the editor. Closing it (or calling `hide()`) hides it, and buffers being
-  created or destroyed will not reopen it; only `show()` or `toggle()` does.
-  Destroy or hide it safely when the editor disappears.
-- Marshal registry-driven GUI changes onto the JUCE message thread and repaint
-  on a roughly 30 Hz timer that only polls while the viewer is on screen.
+void prepareToPlay(double sampleRate, int) override
+{
+    backtrack.emplace("Output", sampleRate, getTotalNumOutputChannels());
+}
 
-## Build and Demonstration
+void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+{
+    // ... your processing ...
+    backtrack->record(buffer);
+}
 
-- The root CMake project uses `FetchContent` with JUCE pinned to tag `8.0.10`,
-  CMake 3.22+, and C++20. When added with `add_subdirectory()` to a project
-  that already provides JUCE targets, it reuses them, and tests and the demo
-  are off by default.
-- `la_backtrack` is an `INTERFACE` target linking the required JUCE audio and GUI
-  modules.
-- The JUCE desktop demo under `test/`:
-  - Calls `Backtrack::setEditor(this)`.
-  - Creates several mono and stereo Backtrack instances, including duplicate
-    names.
-  - Generates or routes live audio through each `record()` overload.
-  - Demonstrates automatic viewer opening, continued capture, and stopped-host
-    inspection.
-- A console test target covers storage and non-visual behavior and is registered
-  with CTest.
+// Editor constructor
+la::Backtrack::setEditor(this);
+```
 
-Configure and verify the project with:
+The viewer opens once an editor is set and at least one `Backtrack` exists.
+Each `Backtrack` is one named buffer; create as many as you like and pick one
+from the viewer's menu.
+
+## API
+
+```cpp
+la::Backtrack(std::string name, double sampleRate, int channelCount);
+
+void record(const juce::AudioBuffer<float>& buffer, int startSample = 0, int numSamples = -1) noexcept;
+void record(std::span<const float> mono) noexcept;
+void record(std::span<const std::span<const float>> channels) noexcept;
+
+static void setEditor(juce::Component* editor); // message thread
+static void show();
+static void hide();
+static void toggle();
+```
+
+- `record()` can be called from the audio thread; it holds a short lock while
+  appending. Blocks with the wrong channel count or invalid ranges are dropped
+  and counted rather than throwing.
+- Recording is append-only until the `Backtrack` is destroyed. Don't destroy it
+  while another thread is calling `record()`.
+- One hour per channel is reserved up front; longer recordings keep growing.
+  Define `LA_BACKTRACK_RESERVE_SECONDS` (consistently across the target) to
+  change that.
+- No need to call `setEditor(nullptr)`: Backtrack detaches when the editor is
+  deleted. Calling it from one plugin instance's editor would detach another's.
+
+## Building and testing
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
@@ -126,49 +81,10 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-The demo target is `la_backtrack_demo`. Set `LA_BACKTRACK_BUILD_DEMO=OFF` to
-exclude it. Tests use a short reserve interval; consumers reserve one hour per
-channel by default and may consistently define `LA_BACKTRACK_RESERVE_SECONDS`
-to another positive value for all translation units in a target.
-
-ThreadSanitizer coverage is opt-in, since it builds a second copy of the
-smoke test (GUI tests are skipped there):
-
-```sh
-cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DLA_BACKTRACK_TSAN=ON
-cmake --build build-tsan --parallel
-ctest --test-dir build-tsan --output-on-failure
-```
-
-## Test Plan
-
-- Verify all record overloads preserve sample values, channel ordering, ranges,
-  and cumulative length.
-- Verify invalid blocks are discarded atomically and update the dropped-block
-  count.
-- Verify allocation failure handling leaves existing audio intact.
-- Verify one-hour per-channel reservation and retained/reserved byte
-  calculations.
-- Verify minimum/maximum summaries across block boundaries and the transition to
-  exact-sample rendering.
-- Verify duplicate naming remains stable through instance creation and
-  destruction.
-- Exercise concurrent UI snapshots and recording under ThreadSanitizer where
-  available.
-- Verify editor deletion, instance deletion, window hiding/reopening, and
-  application shutdown produce no dangling access.
-- Manually validate live following, disengaging follow mode, return-to-start
-  navigation, zoom anchoring, stacked channels, hover values, and memory-warning
-  colors.
-
-## Assumptions
-
-- This is an in-process debugging tool, so brief audio-thread locking, large
-  virtual reservations, and occasional allocation or page-fault costs are
-  acceptable.
-- A Backtrack instance has one producer format for its lifetime; sample rate and
-  channel count never change.
-- All GUI ownership calls occur in a JUCE application with a functioning message
-  manager.
-- The utility stores audio only in memory and performs no file export or session
-  persistence.
+- **Demo app:** `la_backtrack_demo`. Turn it off with `-DLA_BACKTRACK_BUILD_DEMO=OFF`.
+- **ThreadSanitizer:** add `-DLA_BACKTRACK_TSAN=ON` to also build and run the
+  smoke test under TSan.
+- **JUCE 7:** `examples/juce7_plugin` is a minimal plugin on JUCE 7.0.12, and
+  configuring it also runs the tests against JUCE 7:
+  `cmake -S examples/juce7_plugin -B build-juce7`. It targets macOS 11, because
+  JUCE 7 doesn't build against macOS 15+ SDKs otherwise.

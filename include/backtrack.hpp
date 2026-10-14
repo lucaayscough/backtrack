@@ -526,7 +526,11 @@ public:
     addAndMakeVisible(_scrollbar);
     addAndMakeVisible(_status);
     _status.setJustificationType(juce::Justification::centredLeft);
+#if JUCE_MAJOR_VERSION >= 8
     _status.setFont(juce::FontOptions(12.0f));
+#else
+    _status.setFont(juce::Font(12.0f));
+#endif
     _capture_selector.onChange = [this] {
       const auto index = _capture_selector.getSelectedItemIndex();
       if (juce::isPositiveAndBelow(index, int(_captures.size())))
@@ -952,12 +956,22 @@ class GuiController final : public juce::DeletedAtShutdown,
                             private juce::ComponentListener
 {
 public:
-  JUCE_DECLARE_SINGLETON_INLINE(GuiController, false)
+  // Hand-written rather than JUCE_DECLARE_SINGLETON_INLINE, which JUCE 7 lacks.
+  static GuiController* getInstance()
+  {
+    JUCE_ASSERT_MESSAGE_THREAD
+    auto*& instance = slot();
+    if (instance == nullptr)
+      instance = new GuiController;
+    return instance;
+  }
+
+  static GuiController* getInstanceWithoutCreating() noexcept { return slot(); }
 
   ~GuiController() override
   {
     detach_editor();
-    clearSingletonInstance();
+    slot() = nullptr;
   }
 
   void set_editor(juce::Component* editor)
@@ -1020,6 +1034,12 @@ private:
   friend struct BacktrackTestAccess;
 
   GuiController() = default;
+
+  static GuiController*& slot() noexcept
+  {
+    static GuiController* instance = nullptr;
+    return instance;
+  }
 
   void detach_editor()
   {
