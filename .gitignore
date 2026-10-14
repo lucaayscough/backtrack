@@ -1,0 +1,8 @@
+build/
+build-*/
+out/
+.cache/
+cmake-build-*/
+.DS_Store
+*.swp
+.clangd
